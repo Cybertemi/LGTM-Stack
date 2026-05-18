@@ -1,0 +1,58 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Collect logs from systemd journal
+  journald:
+    units:
+      - openprofile-main-be
+      - openprofile-staging-be
+      - openprofile-production-fe
+      - openprofile-staging-fe
+      - prometheus
+      - loki
+      - tempo
+      - alertmanager
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  resource:
+    attributes:
+      - key: service.environment
+        value: production
+        action: upsert
+
+exporters:
+  otlp/tempo:
+    endpoint: localhost:4317
+    tls:
+      insecure: true
+
+  loki:
+    endpoint: http://localhost:3100/loki/api/v1/push
+    labels:
+      resource:
+        service.name: "service_name"
+        service.environment: "env"
+
+  logging:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [otlp/tempo]
+
+    logs:
+      receivers: [otlp, journald]
+      processors: [batch, resource]
+      exporters: [loki]

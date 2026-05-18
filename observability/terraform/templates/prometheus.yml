@@ -1,0 +1,106 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: openprofile
+    environment: production
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - localhost:9093
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+
+  # Prometheus itself
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          app: prometheus
+          env: production
+
+  # Server metrics
+  - job_name: node-exporter
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["localhost:9100"]
+        labels:
+          app: node-exporter
+          env: production
+
+  # Blackbox - probe frontend and backend URLs
+  - job_name: blackbox-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        # Frontend URLs
+          - https://open-profile.hng14.com/
+          - https://staging.open-profile.hng14.com/
+          - http://api.open-profile.hng14.com
+          - http://api.staging.open-profile.hng14.com
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: localhost:9115
+
+  # Blackbox - SSL expiry check
+  - job_name: blackbox-ssl
+    metrics_path: /probe
+    params:
+      module: [tls_connect]
+    static_configs:
+      - targets:
+          - open-profile.hng14.com:443
+          - staging.open-profile.hng14.com:443
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: localhost:9115
+
+  # Backend prod metrics
+  - job_name: openprofile-backend-prod
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["api.open-profile.hng14.com:80"]
+        labels:
+          app: openprofile-backend
+          env: production
+
+  # Backend staging metrics
+  - job_name: openprofile-backend-staging
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["api.staging.open-profile.hng14.com:80"]
+        labels:
+          app: openprofile-backend
+          env: staging
+
+  # Alertmanager
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["localhost:9093"]
+        labels:
+          app: alertmanager
+          env: production
+
+  # Pushgateway - DORA metrics from GitHub Actions
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["localhost:9091"]
+        labels:
+          app: pushgateway
+          env: production

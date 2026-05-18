@@ -1,0 +1,96 @@
+groups:
+  - name: slo
+    interval: 1m
+    rules:
+
+      # ── Availability SLI ──────────────────────
+      # SLO: 99.5% of HTTP probes return 2xx over 30 days
+      - record: slo:availability:ratio_rate5m
+        expr: |
+          avg_over_time(probe_success{job="blackbox-http"}[5m])
+
+      - record: slo:availability:ratio_rate1h
+        expr: |
+          avg_over_time(probe_success{job="blackbox-http"}[1h])
+
+      - record: slo:availability:ratio_rate6h
+        expr: |
+          avg_over_time(probe_success{job="blackbox-http"}[6h])
+
+      # ── Error Rate SLI ────────────────────────
+      # SLO: 99% of requests succeed (non-5xx)
+      - record: slo:error_rate:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      - record: slo:error_rate:ratio_rate1h
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total[1h]))
+
+      # ── Latency SLI ───────────────────────────
+      # SLO: 95% of requests complete under 500ms
+      - record: slo:latency:ratio_rate5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count[5m]))
+
+      # ── Fast Burn Rate Alert ──────────────────
+      # 2% of error budget consumed in 1 hour = 14.4x burn rate
+      - alert: SloBurnRateFast
+        expr: |
+          (
+            1 - slo:availability:ratio_rate1h
+          ) / (1 - 0.995) > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          env: production
+          slo: availability
+        annotations:
+          summary: "CRITICAL: SLO error budget burning too fast"
+          description: "Availability SLO is burning at {{ $value | printf \"%.1f\" }}x the allowed rate. 2% of monthly error budget will be consumed in 1 hour if this continues."
+          value: "{{ $value | printf \"%.1f\" }}x burn rate"
+          dashboard_url: "http://13.63.157.203:3000/d/slo"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-burn-rate-fast.md"
+
+      # ── Slow Burn Rate Alert ──────────────────
+      # 5% of error budget consumed in 6 hours = 5x burn rate
+      - alert: SloBurnRateSlow
+        expr: |
+          (
+            1 - slo:availability:ratio_rate6h
+          ) / (1 - 0.995) > 5
+        for: 15m
+        labels:
+          severity: warning
+          env: production
+          slo: availability
+        annotations:
+          summary: "WARNING: SLO error budget burning slowly but steadily"
+          description: "Availability SLO is burning at {{ $value | printf \"%.1f\" }}x the allowed rate. 5% of monthly error budget will be consumed in 6 hours if not addressed."
+          value: "{{ $value | printf \"%.1f\" }}x burn rate"
+          dashboard_url: "http://13.63.157.203:3000/d/slo"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-burn-rate-slow.md"
+
+      # ── Error Budget Exhausted ────────────────
+      - alert: SloErrorBudgetExhausted
+        expr: |
+          (
+            1 - avg_over_time(probe_success{job="blackbox-http"}[30d])
+          ) > (1 - 0.995)
+        for: 5m
+        labels:
+          severity: critical
+          env: production
+          slo: availability
+        annotations:
+          summary: "CRITICAL: SLO error budget fully exhausted"
+          description: "The 30-day availability error budget has been fully consumed. Immediate action required — consider feature freeze."
+          value: "budget exhausted"
+          dashboard_url: "http://13.63.157.203:3000/d/slo"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-budget-exhausted.md"

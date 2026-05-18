@@ -1,0 +1,115 @@
+groups:
+  - name: slo-burn-rate
+    interval: 1m
+    rules:
+
+      # ── Fast Burn — Availability ──────────────
+      # 2% of error budget consumed in 1 hour = 14.4x burn rate
+      - alert: AvailabilityBurnRateFast
+        expr: |
+          (1 - avg_over_time(probe_success{job="blackbox-http"}[1h])) 
+          / (1 - 0.995) > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          env: production
+          slo: availability
+          team: devops
+        annotations:
+          summary: "CRITICAL: Availability error budget burning at fast rate"
+          description: >
+            Availability SLO is burning at {{ $value | printf "%.1f" }}x the allowed rate.
+            At this pace, 2% of the monthly error budget will be consumed within 1 hour.
+            Immediate investigation required.
+          value: "{{ $value | printf \"%.1f\" }}x burn rate"
+          dashboard_url: "http://98.84.164.17:3000/d/slo-error-budget-001"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-burn-rate-fast.md"
+
+      # ── Slow Burn — Availability ──────────────
+      # 5% of error budget consumed in 6 hours = 5x burn rate
+      - alert: AvailabilityBurnRateSlow
+        expr: |
+          (1 - avg_over_time(probe_success{job="blackbox-http"}[6h])) 
+          / (1 - 0.995) > 5
+        for: 15m
+        labels:
+          severity: warning
+          env: production
+          slo: availability
+          team: devops
+        annotations:
+          summary: "WARNING: Availability error budget burning slowly but steadily"
+          description: >
+            Availability SLO is burning at {{ $value | printf "%.1f" }}x the allowed rate.
+            At this pace, 5% of the monthly error budget will be consumed within 6 hours.
+            Investigate before next deployment.
+          value: "{{ $value | printf \"%.1f\" }}x burn rate"
+          dashboard_url: "http://98.84.164.17:3000/d/slo-error-budget-001"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-burn-rate-slow.md"
+
+      # ── Fast Burn — Error Rate ────────────────
+      - alert: ErrorRateBurnRateFast
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[1h]))
+            / sum(rate(http_requests_total[1h]))
+          ) / (1 - 0.99) > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          env: production
+          slo: error_rate
+          team: devops
+        annotations:
+          summary: "CRITICAL: Error rate SLO burning at fast rate"
+          description: >
+            Error rate SLO is burning at {{ $value | printf "%.1f" }}x the allowed rate.
+            At this pace, 2% of the monthly error budget will be consumed within 1 hour.
+            Immediate investigation required.
+          value: "{{ $value | printf \"%.1f\" }}x burn rate"
+          dashboard_url: "http://98.84.164.17:3000/d/slo-error-budget-001"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-burn-rate-fast.md"
+
+      # ── Slow Burn — Error Rate ────────────────
+      - alert: ErrorRateBurnRateSlow
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[6h]))
+            / sum(rate(http_requests_total[6h]))
+          ) / (1 - 0.99) > 5
+        for: 15m
+        labels:
+          severity: warning
+          env: production
+          slo: error_rate
+          team: devops
+        annotations:
+          summary: "WARNING: Error rate SLO burning slowly but steadily"
+          description: >
+            Error rate SLO is burning at {{ $value | printf "%.1f" }}x the allowed rate.
+            At this pace, 5% of the monthly error budget will be consumed within 6 hours.
+            Investigate before next deployment.
+          value: "{{ $value | printf \"%.1f\" }}x burn rate"
+          dashboard_url: "http://98.84.164.17:3000/d/slo-error-budget-001"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-burn-rate-slow.md"
+
+      # ── Error Budget Exhausted ────────────────
+      - alert: AvailabilityErrorBudgetExhausted
+        expr: |
+          (1 - avg_over_time(probe_success{job="blackbox-http"}[30d])) 
+          > (1 - 0.995)
+        for: 5m
+        labels:
+          severity: critical
+          env: production
+          slo: availability
+          team: devops
+        annotations:
+          summary: "CRITICAL: Availability error budget fully exhausted"
+          description: >
+            The 30-day availability error budget has been fully consumed.
+            The service has been less reliable than promised.
+            Immediate action required — feature freeze per error budget policy.
+          value: "budget exhausted"
+          dashboard_url: "http://98.84.164.17:3000/d/slo-error-budget-001"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/slo-budget-exhausted.md"

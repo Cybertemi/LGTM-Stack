@@ -1,0 +1,136 @@
+groups:
+  - name: infrastructure
+    interval: 1m
+    rules:
+
+      # ── CPU Alerts ────────────────────────────
+      - alert: CpuHighWarning
+        expr: |
+          (1 - avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          env: production
+        annotations:
+          summary: "CPU usage above 80% on {{ $labels.instance }}"
+          description: "CPU has been above 80% for more than 5 minutes. Current value is {{ $value | printf \"%.2f\" }}%"
+          value: "{{ $value | printf \"%.2f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/node-exporter"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/cpu-high.md"
+
+      - alert: CpuHighCritical
+        expr: |
+          (1 - avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 90
+        for: 10m
+        labels:
+          severity: critical
+          env: production
+        annotations:
+          summary: "CRITICAL: CPU usage above 90% on {{ $labels.instance }}"
+          description: "CPU has been above 90% for more than 10 minutes. Current value is {{ $value | printf \"%.2f\" }}%"
+          value: "{{ $value | printf \"%.2f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/node-exporter"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/cpu-high.md"
+
+      # ── Memory Alerts ─────────────────────────
+      - alert: MemoryHighWarning
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          env: production
+        annotations:
+          summary: "Memory usage above 80% on {{ $labels.instance }}"
+          description: "Memory has been above 80% for more than 5 minutes. Current value is {{ $value | printf \"%.2f\" }}%"
+          value: "{{ $value | printf \"%.2f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/node-exporter"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/memory-high.md"
+
+      - alert: MemoryHighCritical
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          env: production
+        annotations:
+          summary: "CRITICAL: Memory usage above 90% on {{ $labels.instance }}"
+          description: "Memory has been above 90% for more than 5 minutes. Current value is {{ $value | printf \"%.2f\" }}%"
+          value: "{{ $value | printf \"%.2f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/node-exporter"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/memory-high.md"
+
+      # ── Disk Alerts ───────────────────────────
+      - alert: DiskHighWarning
+        expr: |
+          (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs"})) * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+          env: production
+        annotations:
+          summary: "Disk usage above 75% on {{ $labels.instance }}"
+          description: "Disk {{ $labels.mountpoint }} has been above 75% for more than 5 minutes. Current value is {{ $value | printf \"%.2f\" }}%"
+          value: "{{ $value | printf \"%.2f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/node-exporter"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/disk-high.md"
+
+      - alert: DiskHighCritical
+        expr: |
+          (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs"})) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          env: production
+        annotations:
+          summary: "CRITICAL: Disk usage above 90% on {{ $labels.instance }}"
+          description: "Disk {{ $labels.mountpoint }} has been above 90% for more than 5 minutes. Current value is {{ $value | printf \"%.2f\" }}%"
+          value: "{{ $value | printf \"%.2f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/node-exporter"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/disk-high.md"
+
+      # ── Server Down Alert ─────────────────────
+      - alert: ServerDown
+        expr: |
+          probe_success{job="blackbox-http"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          env: production
+        annotations:
+          summary: "Server is DOWN: {{ $labels.instance }}"
+          description: "{{ $labels.instance }} has been unreachable for more than 2 minutes"
+          value: "unreachable"
+          dashboard_url: "http://13.63.157.203:3000/d/blackbox"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/server-down.md"
+
+      # ── SSL Expiry Alert ──────────────────────
+      - alert: SslCertificateExpiringSoon
+        expr: |
+          probe_ssl_earliest_cert_expiry{job="blackbox-ssl"} - time() < 86400 * 14
+        for: 1h
+        labels:
+          severity: warning
+          env: production
+        annotations:
+          summary: "SSL certificate expiring soon for {{ $labels.instance }}"
+          description: "SSL certificate for {{ $labels.instance }} expires in less than 14 days"
+          value: "{{ $value | humanizeDuration }}"
+          dashboard_url: "http://13.63.157.203:3000/d/blackbox"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/ssl-expiry.md"
+
+      # ── High Response Time Alert ──────────────
+      - alert: HighResponseTime
+        expr: |
+          probe_duration_seconds{job="blackbox-http"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          env: production
+        annotations:
+          summary: "High response time on {{ $labels.instance }}"
+          description: "{{ $labels.instance }} response time has been above 2 seconds for 5 minutes"
+          value: "{{ $value | printf \"%.2f\" }}s"
+          dashboard_url: "http://13.63.157.203:3000/d/blackbox"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/high-response-time.md"

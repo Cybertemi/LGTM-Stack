@@ -1,0 +1,41 @@
+name: DORA Metrics
+
+on:
+  push:
+    branches: [dev, main, staging]
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types: [completed]
+
+jobs:
+  record-deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record Deployment to Prometheus Pushgateway
+        run: |
+          # Deployment frequency metric
+          cat <<EOF | curl --data-binary @- http://98.84.164.17:9091/metrics/job/dora/instance/github-actions
+          # HELP deployment_total Total number of deployments
+          # TYPE deployment_total counter
+          deployment_total{branch="${{ github.ref_name }}",status="success",repo="${{ github.repository }}"} 1
+          
+          # HELP deployment_timestamp Timestamp of last deployment
+          # TYPE deployment_timestamp gauge
+          deployment_timestamp{branch="${{ github.ref_name }}",repo="${{ github.repository }}"} $(date +%s)
+          
+          # HELP lead_time_seconds Time from commit to deployment
+          # TYPE lead_time_seconds gauge
+          lead_time_seconds{branch="${{ github.ref_name }}",repo="${{ github.repository }}"} ${{ github.run_attempt }}
+          EOF
+
+  record-failure:
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Record Failed Deployment
+        run: |
+          cat <<EOF | curl --data-binary @- http://98.84.164.17:9091/metrics/job/dora/instance/github-actions
+          # HELP deployment_failure_total Total failed deployments
+          # TYPE deployment_failure_total counter
+          deployment_failure_total{branch="${{ github.ref_name }}",repo="${{ github.repository }}"} 1
+          EOF

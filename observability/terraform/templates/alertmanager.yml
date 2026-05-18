@@ -1,0 +1,84 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: "SLACK_WEBHOOK_URL"
+
+# Group alerts to avoid spam
+route:
+  group_by: ["alertname", "severity", "instance"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: slack-notifications
+
+  routes:
+    # Critical alerts repeat every 1 hour
+    - match:
+        severity: critical
+      receiver: slack-notifications
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Warning alerts repeat every 4 hours
+    - match:
+        severity: warning
+      receiver: slack-notifications
+      group_wait: 30s
+      repeat_interval: 4h
+
+    # SLO burn rate alerts
+    - match:
+        alertname: SloBurnRateFast
+      receiver: slack-notifications
+      group_wait: 10s
+      repeat_interval: 30m
+
+    - match:
+        alertname: SloBurnRateSlow
+      receiver: slack-notifications
+      group_wait: 30s
+      repeat_interval: 2h
+
+receivers:
+  - name: slack-notifications
+    slack_configs:
+      - channel: "#DevOps-Alerts"
+        send_resolved: true
+        icon_url: "https://avatars.githubusercontent.com/u/3380462"
+        username: "OpenProfile Alertmanager"
+        title: |-
+          [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }}
+        text: >-
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Severity:* {{ .Labels.severity | toUpper }}
+          *Host:* {{ .Labels.instance }}
+          *Environment:* {{ .Labels.env }}
+          *Value:* {{ .Annotations.value }}
+          *Description:* {{ .Annotations.description }}
+          *Dashboard:* {{ .Annotations.dashboard_url }}
+          *Runbook:* {{ .Annotations.runbook_url }}
+          *Started:* {{ .StartsAt | since }}
+          {{ end }}
+        actions:
+          - type: button
+            text: "View Dashboard 📊"
+            url: "{{ (index .Alerts 0).Annotations.dashboard_url }}"
+          - type: button
+            text: "View Runbook 📖"
+            url: "{{ (index .Alerts 0).Annotations.runbook_url }}"
+
+# Suppress warning noise when critical is already firing
+inhibit_rules:
+  # If server is down, suppress all other alerts for that instance
+  - source_match:
+      alertname: ServerDown
+    target_match_re:
+      alertname: "CpuHigh|MemoryHigh|DiskHigh|LatencyHigh"
+    equal: ["instance"]
+
+  # If critical fires, suppress warning for same alert on same instance
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["alertname", "instance"]

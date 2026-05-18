@@ -1,0 +1,59 @@
+groups:
+  - name: dora
+    interval: 1m
+    rules:
+
+      # ── Change Failure Rate Alert ─────────────
+      # Alert if CFR exceeds 15% (DORA low performer threshold)
+      - alert: ChangeFailureRateHigh
+        expr: |
+          (
+            sum(increase(github_actions_workflow_run_total{conclusion="failure"}[7d]))
+            /
+            sum(increase(github_actions_workflow_run_total[7d]))
+          ) * 100 > 15
+        for: 5m
+        labels:
+          severity: critical
+          env: production
+          dora: cfr
+        annotations:
+          summary: "Change Failure Rate above SLO threshold"
+          description: "CFR is {{ $value | printf \"%.1f\" }}% over the last 7 days. SLO threshold is 15%. Deployments are failing too frequently."
+          value: "{{ $value | printf \"%.1f\" }}%"
+          dashboard_url: "http://13.63.157.203:3000/d/dora"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/cfr-high.md"
+
+      # ── MTTR Alert ────────────────────────────
+      # Alert if mean time to restore exceeds 1 hour
+      - alert: MttrTooHigh
+        expr: |
+          avg(alertmanager_alerts_resolved_total) - avg(alertmanager_alerts_firing_total) > 3600
+        for: 5m
+        labels:
+          severity: warning
+          env: production
+          dora: mttr
+        annotations:
+          summary: "Mean Time to Restore exceeding 1 hour"
+          description: "MTTR is above the 1 hour threshold. Incidents are taking too long to resolve."
+          value: "{{ $value | humanizeDuration }}"
+          dashboard_url: "http://13.63.157.203:3000/d/dora"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/mttr-high.md"
+
+      # ── Deployment Frequency Alert ────────────
+      # Alert if no deployments in 7 days (stale pipeline)
+      - alert: NoRecentDeployments
+        expr: |
+          sum(increase(github_actions_workflow_run_total{conclusion="success"}[7d])) == 0
+        for: 1h
+        labels:
+          severity: warning
+          env: production
+          dora: deployment_frequency
+        annotations:
+          summary: "No successful deployments in the last 7 days"
+          description: "No successful deployments have been recorded in the last 7 days. Pipeline may be broken or stalled."
+          value: "0 deployments"
+          dashboard_url: "http://13.63.157.203:3000/d/dora"
+          runbook_url: "https://github.com/YOUR_ORG/open-profile-be/blob/main/observability/runbooks/no-deployments.md"
