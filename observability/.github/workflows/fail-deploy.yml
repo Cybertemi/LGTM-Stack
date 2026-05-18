@@ -1,0 +1,49 @@
+name: Game Day — Failing Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Set to "fail" to simulate failure'
+        required: true
+        default: 'fail'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Record deploy start (Pushgateway)
+        run: |
+          START=$(date +%s)
+          echo "DEPLOY_START=$START" >> $GITHUB_ENV
+          curl -s --data-binary "deploy_start_timestamp $START" \
+            http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
+
+      - name: Simulate failing deployment
+        run: |
+          echo "Deploying v${{ github.run_number }}..."
+          sleep 5
+          # Force failure
+          exit 1
+
+      - name: Record success (never reached on failure)
+        if: success()
+        run: |
+          END=$(date +%s)
+          curl -s --data-binary @- http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday << 'EOF'
+          deploy_success_total{env="production"} 1
+          deploy_end_timestamp $END
+          EOF
+
+      - name: Record failure to Pushgateway
+        if: failure()
+        run: |
+          END=$(date +%s)
+          curl -s --data-binary @- http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday << 'EOF'
+          deploy_failure_total{env="production",reason="exit_code_1"} 1
+          deploy_end_timestamp $END
+          EOF
+          echo "Failure recorded to Pushgateway"
