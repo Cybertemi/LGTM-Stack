@@ -100,19 +100,22 @@ jobs:
           gameday_latency_p95_seconds{scenario="latency",phase="injected"} ${P95}
           EOF
 
-      - name: Remove latency and restore service
-        if: always()
-        run: |
-          IFACE="${{ steps.detect_iface.outputs.iface }}"
-          ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=no \
-            techgoddess-op@${{ secrets.APP_SERVER_IP }} \
-            "sudo tc qdisc del dev ${IFACE} root 2>/dev/null || true; \
-             sudo pkill -f 'curl -s https://open-profile.hng14.com/ > /dev/null 2>&1; \
-             curl -s http://api.open-profile.hng14.com/ > /dev/null 2>&1; \
-             echo 'Latency removed and traffic generator stopped'"
-          echo "Latency removed — service recovering"
+    
 
+          - name: Remove latency and restore service
+            if: always()
+            run: |
+              IFACE="${{ steps.detect_iface.outputs.iface }}"
+
+              ssh -i ~/.ssh/id_ed25519 \
+                -o StrictHostKeyChecking=no \
+                techgoddess-op@${{ secrets.APP_SERVER_IP }} \
+                "sudo tc qdisc del dev ${IFACE} root 2>/dev/null || true;
+                 sudo pkill -f 'open-profile.hng14.com' || true;
+                 echo 'Latency removed and traffic generator stopped'"
+
+              echo "Latency removed — service recovering"
+              
       - name: Record latency injection end
         if: always()
         run: |
