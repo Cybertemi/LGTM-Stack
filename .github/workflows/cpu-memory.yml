@@ -1,22 +1,23 @@
-name: Game Day — CPU/Memory Pressure
+name: Game Day — CPU and Memory Pressure
 
 on:
   workflow_dispatch:
     inputs:
-      phase:
-        description: 'Which phase to run'
+      cpu_load_percent:
+        description: 'CPU load percentage to simulate (0-100)'
         required: true
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - cpu-warning-only
-          - cpu-critical-only
-          - memory-only
-          - cleanup
+        default: '85'
+      memory_percent:
+        description: 'Memory percentage to consume (0-100)'
+        required: true
+        default: '85'
+      duration_seconds:
+        description: 'How long to hold the pressure (seconds)'
+        required: true
+        default: '600'
 
 jobs:
-  stress-test:
+  cpu-memory-pressure:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,268 +29,166 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.APP_SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Record pressure start
+        run: |
+          START=$(date +%s)
+          cat <<EOF | curl -s --data-binary @- \
+            http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
+          gameday_cpu_pressure_start_timestamp $START
+          gameday_cpu_pressure_percent{scenario="cpu_memory"} ${{ github.event.inputs.cpu_load_percent }}
+          gameday_memory_pressure_percent{scenario="cpu_memory"} ${{ github.event.inputs.memory_percent }}
+          EOF
+          echo "CPU/Memory pressure start recorded to Pushgateway"
 
       - name: Install stress-ng on server
         run: |
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "which stress-ng > /dev/null 2>&1 || \
-             sudo apt-get install -y stress-ng -q"
-          echo "✅ stress-ng ready"
+            techgoddess-op@${{ secrets.APP_SERVER_IP }} \
+            "which stress-ng || sudo apt-get install -y stress-ng"
+          echo "stress-ng ready on server"
 
-      - name: Cleanup any existing stress processes
+      - name: Get server CPU count
+        id: cpu_count
         run: |
+          CPUS=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ubuntu@${{ secrets.APP_SERVER_IP }} \
+            "nproc")
+          echo "cpus=${CPUS}" >> $GITHUB_OUTPUT
+          echo "Server has ${CPUS} CPU(s)"
+
+      - name: Get server total memory
+        id: memory_info
+        run: |
+          TOTAL_MB=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            techgoddess-op@${{ secrets.APP_SERVER_IP }} \
+            "free -m | awk '/^Mem:/{print \$2}'")
+          TARGET_MB=$(( TOTAL_MB * ${{ github.event.inputs.memory_percent }} / 100 ))
+          echo "total_mb=${TOTAL_MB}" >> $GITHUB_OUTPUT
+          echo "target_mb=${TARGET_MB}" >> $GITHUB_OUTPUT
+          echo "Total memory: ${TOTAL_MB}MB — Target: ${TARGET_MB}MB"
+
+      - name: Apply CPU and memory pressure
+        run: |
+          CPUS="${{ steps.cpu_count.outputs.cpus }}"
+          TARGET_MB="${{ steps.memory_info.outputs.target_mb }}"
+          DURATION="${{ github.event.inputs.duration_seconds }}"
+          echo "Applying pressure for ${DURATION}s"
+          echo "  CPU workers : ${CPUS}"
+          echo "  Memory target: ${TARGET_MB}MB"
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "sudo pkill -f stress-ng 2>/dev/null; \
-             echo 'Previous stress cleared'"
+            techgoddess-op@${{ secrets.APP_SERVER_IP }} \
+            "nohup sudo stress-ng \
+              --cpu ${CPUS} \
+              --cpu-load ${{ github.event.inputs.cpu_load_percent }} \
+              --vm 1 \
+              --vm-bytes ${TARGET_MB}M \
+              --timeout ${DURATION}s \
+              --metrics-brief \
+              > /tmp/stress-ng.log 2>&1 &
+             echo \$! > /tmp/stress-ng.pid
+             echo 'stress-ng started with PID '\$(cat /tmp/stress-ng.pid)"
+          echo "Pressure applied — watch Grafana Node Exporter dashboard"
 
-      - name: Record scenario start
+      - name: Watch for warning alert (wait 5 minutes)
         run: |
-          START=$(date +%s)
-          cat <<EOF | curl -s --data-binary @- \
-            http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_cpu_stress_start_timestamp $START
-          gameday_cpu_stress_phase{phase="${{ github.event.inputs.phase }}"} 1
-          EOF
-          echo "Scenario 3 start recorded to Pushgateway"
-
-      # ============================================================
-      # PHASE 1 — CPU WARNING (85%)
-      # ============================================================
-      - name: Phase 1 — CPU warning stress (85%)
-        if: >
-          github.event.inputs.phase == 'full' ||
-          github.event.inputs.phase == 'cpu-warning-only'
-        run: |
-          echo "Starting CPU stress at 85% — above 80% warning threshold"
-          ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "nohup sudo stress-ng --cpu 0 \
-              --cpu-load 85 --timeout 900s \
-              --metrics-brief > /tmp/stress.log 2>&1 &"
-          echo "✅ CPU stress at 85% started"
+          echo "Waiting 5 minutes for WARNING alert to fire..."
+          echo "Expected: CpuHighWarning (CPU > 80% for 5 mins)"
+          echo "Expected: MemoryHighWarning (Memory > 80% for 5 mins)"
           echo ""
-          echo "📊 Watch your Node Exporter dashboard:"
-          echo "   http://${{ secrets.SERVER_IP }}:3000/d/node-exporter-001"
-          echo "🔔 Watch Prometheus alerts:"
-          echo "   http://${{ secrets.SERVER_IP }}:9090/alerts"
+          echo "Watch Node Exporter dashboard:"
+          echo "  http://${{ secrets.MONITORING_SERVER_IP }}:3000/d/node-exporter-001"
+          echo ""
+          echo "Watch Slack #DevOps-Alerts for WARNING notification"
+          sleep 300
+          echo "Screenshot now: WARNING alert should be in Slack"
 
-      - name: Wait for CpuHighWarning to fire (5 min threshold)
-        if: >
-          github.event.inputs.phase == 'full' ||
-          github.event.inputs.phase == 'cpu-warning-only'
+      - name: Capture metrics at warning threshold
         run: |
-          echo "Waiting for CpuHighWarning..."
-          echo "Alert fires after CPU > 80% for 5 continuous minutes"
-          MAX_WAIT=600
-          ELAPSED=0
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            STATE=$(ssh -i ~/.ssh/id_ed25519 \
-              -o StrictHostKeyChecking=no \
-              ubuntu@${{ secrets.SERVER_IP }} \
-              "curl -s 'http://localhost:9090/api/v1/rules' | \
-               python3 -c \
-               \"import json,sys; \
-                 d=json.load(sys.stdin); \
-                 [print(a.get('state','inactive')) \
-                  for g in d.get('data',{}).get('groups',[]) \
-                  for r in g.get('rules',[]) \
-                  if r.get('name')=='CpuHighWarning' \
-                  for a in r.get('alerts',[])] or \
-                 print('inactive')\" 2>/dev/null")
-            if [ "$STATE" = "firing" ]; then
-              echo "✅ CpuHighWarning is FIRING"
-              break
-            fi
-            echo "  CpuHighWarning: ${STATE} — ${ELAPSED}s elapsed"
-            sleep 30
-            ELAPSED=$((ELAPSED + 30))
-          done
-
+          CPU=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            techgoddess-op@${{ secrets.APP_SERVER_IP }} \
+            "top -bn1 | grep 'Cpu(s)' | awk '{print \$2}' | cut -d'%' -f1 || echo 'no_data'")
+          MEM=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            ubuntu@${{ secrets.APP_SERVER_IP }} \
+            "free | awk '/^Mem:/{printf \"%.1f\", \$3/\$2*100}' || echo 'no_data'")
+          echo "Current CPU usage : ${CPU}%"
+          echo "Current Memory usage: ${MEM}%"
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_cpu_warning_fired{alert="CpuHighWarning"} 1
+          gameday_cpu_actual_percent{scenario="cpu_memory",phase="warning"} ${CPU}
+          gameday_memory_actual_percent{scenario="cpu_memory",phase="warning"} ${MEM}
           EOF
 
-      # ============================================================
-      # PHASE 2 — CPU CRITICAL (92%)
-      # ============================================================
-      - name: Phase 2 — CPU critical stress (92%)
-        if: >
-          github.event.inputs.phase == 'full' ||
-          github.event.inputs.phase == 'cpu-critical-only'
+      - name: Watch for critical alert (wait additional 5 minutes)
         run: |
-          echo "Escalating to 92% CPU — above 90% critical threshold"
-          ssh -i ~/.ssh/id_ed25519 \
+          echo "Waiting additional 5 minutes for CRITICAL alert to fire..."
+          echo "Expected: CpuHighCritical (CPU > 90% for 10 mins)"
+          echo "Expected: MemoryHighCritical (Memory > 90% for 5 mins)"
+          echo ""
+          echo "Watch Slack #DevOps-Alerts for CRITICAL notification"
+          sleep 300
+          echo "Screenshot now: CRITICAL alert should be in Slack"
+
+      - name: Capture metrics at critical threshold
+        run: |
+          CPU=$(ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "sudo pkill -f stress-ng 2>/dev/null; \
-             sleep 3; \
-             nohup sudo stress-ng --cpu 0 \
-               --cpu-load 92 --timeout 900s \
-               --metrics-brief > /tmp/stress-critical.log 2>&1 &"
-          echo "✅ CPU stress escalated to 92%"
-
-      - name: Wait for CpuHighCritical to fire (10 min threshold)
-        if: >
-          github.event.inputs.phase == 'full' ||
-          github.event.inputs.phase == 'cpu-critical-only'
-        run: |
-          echo "Waiting for CpuHighCritical..."
-          echo "Alert fires after CPU > 90% for 10 continuous minutes"
-          MAX_WAIT=900
-          ELAPSED=0
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            STATE=$(ssh -i ~/.ssh/id_ed25519 \
-              -o StrictHostKeyChecking=no \
-              ubuntu@${{ secrets.SERVER_IP }} \
-              "curl -s 'http://localhost:9090/api/v1/rules' | \
-               python3 -c \
-               \"import json,sys; \
-                 d=json.load(sys.stdin); \
-                 [print(a.get('state','inactive')) \
-                  for g in d.get('data',{}).get('groups',[]) \
-                  for r in g.get('rules',[]) \
-                  if r.get('name')=='CpuHighCritical' \
-                  for a in r.get('alerts',[])] or \
-                 print('inactive')\" 2>/dev/null")
-            if [ "$STATE" = "firing" ]; then
-              echo "✅ CpuHighCritical is FIRING"
-              break
-            fi
-            echo "  CpuHighCritical: ${STATE} — ${ELAPSED}s elapsed"
-            sleep 30
-            ELAPSED=$((ELAPSED + 30))
-          done
-
+            techgoddess@${{ secrets.APP_SERVER_IP }} \
+            "top -bn1 | grep 'Cpu(s)' | awk '{print \$2}' | cut -d'%' -f1 || echo 'no_data'")
+          MEM=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            techgoddess@${{ secrets.APP_SERVER_IP }} \
+            "free | awk '/^Mem:/{printf \"%.1f\", \$3/\$2*100}' || echo 'no_data'")
+          echo "Current CPU usage : ${CPU}%"
+          echo "Current Memory usage: ${MEM}%"
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_cpu_critical_fired{alert="CpuHighCritical"} 1
+          gameday_cpu_actual_percent{scenario="cpu_memory",phase="critical"} ${CPU}
+          gameday_memory_actual_percent{scenario="cpu_memory",phase="critical"} ${MEM}
           EOF
 
-      # ============================================================
-      # PHASE 3 — MEMORY PRESSURE (80%)
-      # ============================================================
-      - name: Phase 3 — Memory pressure (80%)
-        if: >
-          github.event.inputs.phase == 'full' ||
-          github.event.inputs.phase == 'memory-only'
+      - name: Stop pressure and allow recovery
+        if: always()
         run: |
-          echo "Adding memory stress at 80% utilization"
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "nohup sudo stress-ng --vm 1 \
-              --vm-bytes 80% --timeout 600s \
-              --metrics-brief >> /tmp/stress-memory.log 2>&1 &"
-          echo "✅ Memory stress started"
-          sleep 60
+            techgoddess@${{ secrets.APP_SERVER_IP }} \
+            "if [ -f /tmp/stress-ng.pid ]; then \
+               sudo kill \$(cat /tmp/stress-ng.pid) 2>/dev/null || true; \
+               sudo pkill -f stress-ng 2>/dev/null || true; \
+               rm -f /tmp/stress-ng.pid; \
+               echo 'stress-ng stopped'; \
+             else \
+               sudo pkill -f stress-ng 2>/dev/null || true; \
+               echo 'stress-ng killed by pid search'; \
+             fi"
+          echo "Pressure removed — waiting for recovery alerts"
 
-      - name: Wait for MemoryHighWarning to fire
-        if: >
-          github.event.inputs.phase == 'full' ||
-          github.event.inputs.phase == 'memory-only'
+      - name: Wait for recovery alerts
+        if: always()
         run: |
-          echo "Waiting for MemoryHighWarning..."
-          MAX_WAIT=600
-          ELAPSED=0
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            STATE=$(ssh -i ~/.ssh/id_ed25519 \
-              -o StrictHostKeyChecking=no \
-              ubuntu@${{ secrets.SERVER_IP }} \
-              "curl -s 'http://localhost:9090/api/v1/rules' | \
-               python3 -c \
-               \"import json,sys; \
-                 d=json.load(sys.stdin); \
-                 [print(a.get('state','inactive')) \
-                  for g in d.get('data',{}).get('groups',[]) \
-                  for r in g.get('rules',[]) \
-                  if r.get('name')=='MemoryHighWarning' \
-                  for a in r.get('alerts',[])] or \
-                 print('inactive')\" 2>/dev/null")
-            if [ "$STATE" = "firing" ]; then
-              echo "✅ MemoryHighWarning is FIRING"
-              break
-            fi
-            echo "  MemoryHighWarning: ${STATE} — ${ELAPSED}s elapsed"
-            sleep 30
-            ELAPSED=$((ELAPSED + 30))
-          done
-
-          cat <<EOF | curl -s --data-binary @- \
-            http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_memory_warning_fired{alert="MemoryHighWarning"} 1
-          EOF
-
-      # ============================================================
-      # PHASE 4 — RECOVERY
-      # ============================================================
-      - name: Phase 4 — Stop stress and recover
-        if: >
-          always() &&
-          github.event.inputs.phase != 'cleanup'
-        run: |
-          echo "Stopping all stress processes..."
-          ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "sudo pkill -f stress-ng 2>/dev/null; \
-             echo '✅ All stress stopped'"
-          echo "Watch CPU and memory drop on the dashboard"
-          echo "Alerts will resolve within 2-5 minutes"
-          sleep 60
-
-      - name: Wait for all alerts to resolve
-        if: >
-          always() &&
-          github.event.inputs.phase != 'cleanup'
-        run: |
-          echo "Waiting for alerts to resolve..."
+          echo "Waiting 2 minutes for RESOLVED alerts to fire in Slack..."
           sleep 120
-          for ALERT in CpuHighWarning CpuHighCritical MemoryHighWarning; do
-            STATE=$(ssh -i ~/.ssh/id_ed25519 \
-              -o StrictHostKeyChecking=no \
-              ubuntu@${{ secrets.SERVER_IP }} \
-              "curl -s 'http://localhost:9090/api/v1/rules' | \
-               python3 -c \
-               \"import json,sys; \
-                 d=json.load(sys.stdin); \
-                 [print(a.get('state','inactive')) \
-                  for g in d.get('data',{}).get('groups',[]) \
-                  for r in g.get('rules',[]) \
-                  if r.get('name')=='${ALERT}' \
-                  for a in r.get('alerts',[])] or \
-                 print('inactive')\" 2>/dev/null")
-            echo "  ${ALERT}: ${STATE}"
-          done
+          echo "Screenshot now: RESOLVED alerts should be in Slack"
+          echo "Check Node Exporter dashboard — metrics should be back to normal"
 
-      # ============================================================
-      # EMERGENCY CLEANUP
-      # ============================================================
-      - name: Emergency cleanup (if phase=cleanup)
-        if: github.event.inputs.phase == 'cleanup'
-        run: |
-          echo "Running emergency cleanup..."
-          ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.SERVER_IP }} \
-            "sudo pkill -f stress-ng 2>/dev/null; \
-             echo '✅ All stress processes killed'"
-
-      - name: Record scenario end
+      - name: Record pressure end
         if: always()
         run: |
           END=$(date +%s)
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_cpu_stress_end_timestamp $END
-          gameday_cpu_stress_complete{phase="${{ github.event.inputs.phase }}"} 1
+          gameday_cpu_pressure_end_timestamp $END
+          gameday_cpu_pressure_complete{scenario="cpu_memory",status="done"} 1
           EOF
+          echo "CPU/Memory pressure end recorded to Pushgateway"
 
       - name: Scenario 3 summary
         if: always()
@@ -297,17 +196,23 @@ jobs:
           echo "============================================"
           echo "GAME DAY SCENARIO 3 — CPU/MEMORY PRESSURE"
           echo "============================================"
-          echo "Phase run: ${{ github.event.inputs.phase }}"
+          echo "CPU load target  : ${{ github.event.inputs.cpu_load_percent }}%"
+          echo "Memory target    : ${{ github.event.inputs.memory_percent }}%"
+          echo "Duration         : ${{ github.event.inputs.duration_seconds }}s"
+          echo ""
+          echo "Alert sequence expected:"
+          echo "  1. CpuHighWarning  fires after 5 mins  (CPU > 80%)"
+          echo "  2. CpuHighCritical fires after 10 mins (CPU > 90%)"
+          echo "  3. MemoryHighWarning  fires after 5 mins  (Memory > 80%)"
+          echo "  4. MemoryHighCritical fires after 5 mins  (Memory > 90%)"
+          echo "  5. All RESOLVED after stress-ng stops"
           echo ""
           echo "Screenshots to take:"
-          echo "  1. Node Exporter — CPU spike at 85%"
-          echo "  2. Prometheus — CpuHighWarning FIRING"
-          echo "  3. Slack — warning alert message"
-          echo "  4. Node Exporter — CPU spike at 92%"
-          echo "  5. Prometheus — CpuHighCritical FIRING"
-          echo "  6. Slack — critical alert message"
-          echo "  7. Node Exporter — memory pressure"
-          echo "  8. Slack — MemoryHighWarning message"
-          echo "  9. Prometheus — all alerts RESOLVED"
-          echo "  10. Slack — RESOLVED messages"
+          echo "  1. Terminal — stress-ng running"
+          echo "  2. Node Exporter dashboard — CPU spike"
+          echo "  3. Node Exporter dashboard — Memory spike"
+          echo "  4. Slack — WARNING alert firing"
+          echo "  5. Slack — CRITICAL alert firing"
+          echo "  6. Slack — RESOLVED alert after recovery"
+          echo "  7. Node Exporter dashboard — back to normal"
           echo "============================================"
