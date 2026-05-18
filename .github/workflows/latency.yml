@@ -126,7 +126,7 @@ http_request_duration_seconds_bucket\
           END=$(date +%s)
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_latency_injection_end_timestamp $END
+          gameday_latencyd_injection_end_timestamp $END
           gameday_latency_injection_complete{scenario="latency",status="done"} 1
           EOF
           echo "Latency injection end recorded to Pushgateway"
