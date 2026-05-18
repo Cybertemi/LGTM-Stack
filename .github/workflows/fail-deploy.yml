@@ -15,12 +15,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      
+      
       - name: Record deploy start (Pushgateway)
         run: |
           START=$(date +%s)
-          echo "DEPLOY_START=$START" >> $GITHUB_ENV
-          curl -s --data-binary "deploy_start_timestamp $START" \
-            http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
+
+          cat <<EOF | curl --data-binary @- http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
+          deploy_start_timestamp $START
+          EOF
+
+          echo "Start metric pushed"
 
       - name: Simulate failing deployment
         run: |
@@ -38,12 +43,16 @@ jobs:
           deploy_end_timestamp $END
           EOF
 
+    
+
       - name: Record failure to Pushgateway
         if: failure()
         run: |
           END=$(date +%s)
-          curl -s --data-binary @- http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday << 'EOF'
+
+          cat <<EOF | curl --data-binary @- http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
           deploy_failure_total{env="production",reason="exit_code_1"} 1
           deploy_end_timestamp $END
           EOF
+
           echo "Failure recorded to Pushgateway"
