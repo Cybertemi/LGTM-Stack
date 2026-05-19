@@ -23,112 +23,116 @@ jobs:
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          printf "%s" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.APP_SERVER_IP }} >> ~/.ssh/known_hosts
-
       - name: Record latency injection start
         run: |
           START=$(date +%s)
-
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_latency_injection_start_timestamp ${START}
+          gameday_latency_injection_start_timestamp $START
           gameday_latency_injection_ms{scenario="latency"} ${{ github.event.inputs.latency_ms }}
           EOF
-
-          echo "Latency injection start recorded"
-
+          echo "Latency injection start recorded to Pushgateway"
       - name: Detect network interface on server
         id: detect_iface
         run: |
           IFACE=$(ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
             techgoddess-op@${{ secrets.APP_SERVER_IP }} \
-            "ip -o link show | awk -F': ' '\$2 != \"lo\" {print \$2; exit}'")
-
+            "ip link show | grep 'state UP' | grep -v lo | head -1 | awk -F': ' '{print \$2}'")
           echo "iface=${IFACE}" >> $GITHUB_OUTPUT
           echo "Detected interface: ${IFACE}"
-
       - name: Inject latency on server
         run: |
           IFACE="${{ steps.detect_iface.outputs.iface }}"
-
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
             techgoddess-op@${{ secrets.APP_SERVER_IP }} \
-            "sudo tc qdisc add dev ${IFACE} root netem delay ${{ github.event.inputs.latency_ms }}ms 2>/dev/null \
-             || sudo tc qdisc change dev ${IFACE} root netem delay ${{ github.event.inputs.latency_ms }}ms"
-
-          echo "Injected latency"
-
-      - name: Generate traffic
+            "sudo tc qdisc add dev ${IFACE} root netem \
+              delay ${{ github.event.inputs.latency_ms }}ms \
+              2>/dev/null || \
+             sudo tc qdisc change dev ${IFACE} root netem \
+              delay ${{ github.event.inputs.latency_ms }}ms"
+          echo "Injected ${{ github.event.inputs.latency_ms }}ms latency on ${IFACE}"
+      - name: Generate traffic to make SLI degradation visible
         run: |
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
             techgoddess-op@${{ secrets.APP_SERVER_IP }} \
-            "nohup bash -c '
-              for i in \$(seq 1 100); do
-                curl -s https://open-profile.hng14.com/ > /dev/null 2>&1;
-                curl -s http://api.open-profile.hng14.com/ > /dev/null 2>&1;
-                sleep 3;
-              done
-            ' > /tmp/traffic.log 2>&1 &"
-
-      - name: Hold latency
+            "nohup bash -c \
+              'for i in \$(seq 1 100); do \
+                curl -s https://open-profile.hng14.com/ > /dev/null 2>&1; \
+                curl -s http://api.open-profile.hng14.com/ > /dev/null 2>&1; \
+                curl -s http://localhost:9090/api/v1/query?query=up > /dev/null 2>&1; \
+                sleep 3; \
+              done' > /tmp/traffic-gen.log 2>&1 &"
+          echo "Traffic generator started on server"
+      - name: Hold latency for configured duration
         run: |
-          echo "Holding latency for ${{ github.event.inputs.duration_seconds }}s"
+          echo "Holding ${{ github.event.inputs.latency_ms }}ms latency for ${{ github.event.inputs.duration_seconds }}s"
+          echo "Watch your dashboards now:"
+          echo "  SLO:     http://${{ secrets.MONITORING_SERVER_IP }}:3000/d/slo-error-budget-001"
+          echo "  Unified: http://${{ secrets.MONITORING_SERVER_IP }}:3000/d/unified-observability-001"
           sleep ${{ github.event.inputs.duration_seconds }}
-
-      - name: Capture SLI (P95)
+      - name: Capture SLI value before removing latency
         run: |
           P95=$(ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
             techgoddess-op@${{ secrets.APP_SERVER_IP }} \
-            "curl -s 'http://localhost:9090/api/v1/query?query=probe_duration_seconds' \
-            | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-r=d.get(\"data\",{}).get(\"result\",[])
-print(r[0][\"value\"][1] if r else 0)
-'")
+            "curl -s 'http://localhost:9090/api/v1/query?query=probe_duration_seconds'") P95=$(echo "$P95" | python3 -c \
 
-          echo "P95 latency: ${P95}s"
-
+            'import json,sys; \
+             d=json.load(sys.stdin); \
+             r=d.get(\"data\",{}).get(\"result\",[]); \
+             print(r[0].get(\"value\",[0,\"no_data\"])[1] if r else \"no_data\")' \
+            2>/dev/null || echo 'P95 latency during injection: ${P95}s (SLO threshold: 0.5s)'")
+          echo "P95 latency during injection: ${P95}s (SLO threshold: 0.5s)"
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_latency_p95_seconds{scenario="latency"} ${P95}
+          gameday_latency_p95_seconds{scenario="latency",phase="injected"} ${P95}
           EOF
+          - name: Capture SLI value before removing latency
 
-      - name: Remove latency and cleanup
-        if: always()
-        run: |
-          IFACE="${{ steps.detect_iface.outputs.iface }}"
 
-          ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=no \
-            techgoddess-op@${{ secrets.APP_SERVER_IP }} \
-            "sudo tc qdisc del dev ${IFACE} root 2>/dev/null || true;
-             pkill -f curl || true;
-             echo 'cleanup complete'"
-
-      - name: Record end
+          - name: Remove latency and restore service
+            if: always()
+            run: |
+              IFACE="${{ steps.detect_iface.outputs.iface }}"
+              ssh -i ~/.ssh/id_ed25519 \
+                -o StrictHostKeyChecking=no \
+                techgoddess-op@${{ secrets.APP_SERVER_IP }} \
+                "sudo tc qdisc del dev ${IFACE} root 2>/dev/null || true;
+                 sudo pkill -f 'open-profile.hng14.com' || true;
+                 echo 'Latency removed and traffic generator stopped'"
+              echo "Latency removed — service recovering"
+              
+      - name: Record latency injection end
         if: always()
         run: |
           END=$(date +%s)
-
           cat <<EOF | curl -s --data-binary @- \
             http://${{ secrets.PUSHGATEWAY_URL }}/metrics/job/github_actions/instance/gameday
-          gameday_latency_injection_end_timestamp ${END}
+          gameday_latency_injection_end_timestamp $END
           gameday_latency_injection_complete{scenario="latency",status="done"} 1
           EOF
-
-      - name: Summary
+          echo "Latency injection end recorded to Pushgateway"
+      - name: Scenario 2 summary
         if: always()
         run: |
-          echo "===================================="
-          echo "GAME DAY — LATENCY INJECTION"
-          echo "Latency: ${{ github.event.inputs.latency_ms }}ms"
-          echo "Duration: ${{ github.event.inputs.duration_seconds }}s"
-          echo "SLO: 500ms"
-          echo "===================================="
+          echo "============================================"
+          echo "GAME DAY SCENARIO 2 — LATENCY INJECTION"
+          echo "============================================"
+          echo "Latency injected : ${{ github.event.inputs.latency_ms }}ms"
+          echo "Duration         : ${{ github.event.inputs.duration_seconds }}s"
+          echo "SLO threshold    : 500ms"
+          echo ""
+          echo "Screenshots to take:"
+          echo "  1. SLO dashboard  — P95 gauge RED"
+          echo "  2. Burn rate panel climbing"
+          echo "  3. Unified dashboard — latency spike in metrics row"
+          echo "  4. Tempo — slow trace waterfall"
+          echo "  5. Slack — SloBurnRateSlow or SloBurnRateFast alert"
+          echo "  6. SLO dashboard — recovery back to GREEN"
+          echo "============================================"
