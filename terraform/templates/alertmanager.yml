@@ -57,7 +57,7 @@ receivers:
           *Description:* {{ .Annotations.description }}
           *Dashboard:* {{ .Annotations.dashboard_url }}
           *Runbook:* {{ .Annotations.runbook_url }}
-          *Started:* {{ .StartsAt | since }}
+          *Started:* {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
           {{ end }}
         actions:
           - type: button
