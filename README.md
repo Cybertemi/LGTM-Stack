@@ -3,6 +3,11 @@
 
 A production-grade observability and reliability platform built on the LGTM stack (Loki, Grafana, Tempo, Prometheus) for the OpenProfile application.
 
+## Live Presentation
+
+📊 Presentation Slides:  
+You can view the full project presentation slides here: https://canva.link/vpv0rr13wz30go4
+
 ---
 
 ## One Command Deployment
@@ -190,56 +195,7 @@ Every alert has a runbook in `runbooks/`:
 | Loki logs          | 30 days    |
 | Tempo traces       | 30 days    |
 
----
 
-## Repository Structure
-observability/
-├── terraform/
-│   ├── main.tf                    # AWS provider + security group rules
-│   ├── variables.tf               # All variables
-│   ├── outputs.tf                 # URLs after apply
-│   ├── provisioner.tf             # SSH + install script
-│   ├── terraform.tfvars.example   # Template for teammates
-│   └── templates/
-│       ├── install.sh             # Master install script
-│       ├── prometheus.yml         # Scrape configs
-│       ├── alertmanager.yml       # Routing + Slack templates
-│       ├── loki-config.yml        # Log storage config
-│       ├── tempo-config.yml       # Trace storage config
-│       ├── blackbox.yml           # Probe modules
-│       ├── otel-config.yml        # OTel Collector config
-│       ├── alerts/
-│       │   ├── infrastructure.yml
-│       │   ├── slo.yml
-│       │   ├── slo-burn-rate.yml
-│       │   └── dora.yml
-│       └── grafana/
-│           ├── provisioning/
-│           │   ├── datasources/
-│           │   └── dashboards/
-│           └── dashboards/
-│               ├── node-exporter.json
-│               ├── blackbox-exporter.json
-│               ├── slo-error-budget.json
-│               ├── unified.json
-│               └── dora-dashboard.json
-├── docs/
-│   ├── slo-definitions.md
-│   ├── error-budget-policy.md
-│   └── post-incident-review.md
-└── runbooks/
-├── cpu-high.md
-├── memory-high.md
-├── disk-high.md
-├── server-down.md
-├── ssl-expiry.md
-├── high-response-time.md
-├── slo-burn-rate-fast.md
-├── slo-burn-rate-slow.md
-├── slo-budget-exhausted.md
-├── cfr-high.md
-├── mttr-high.md
-└── no-deployments.md
 
 ## Conclusion
 This project demonstrates how modern reliability engineering is built and that it is not just about monitoring, but observability, SLOs, automation and feedback loops.
